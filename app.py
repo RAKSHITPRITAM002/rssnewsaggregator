@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, render_template
+from flask import Flask, render_template, jsonify, request
 import feedparser
 import requests
 from bs4 import BeautifulSoup
@@ -9,7 +9,6 @@ import threading
 
 app = Flask(__name__)
 
-# Define RSS feeds
 RSS_FEEDS = [
     "https://money.cnn.com/services/rss/",
     "https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml",
@@ -18,17 +17,14 @@ RSS_FEEDS = [
     "https://www.federalreserve.gov/feeds/feeds.htm"
 ]
 
-# Category mapping for articles
 CATEGORY_MAP = {
     "Politics": [],
     "War": [],
     "Finance": [],
 }
 
-# Database connection functions
 def create_connection():
     conn = sqlite3.connect('news.db')
-    conn.row_factory = sqlite3.Row  # To return rows as dictionaries
     return conn
 
 def create_table():
@@ -38,9 +34,8 @@ def create_table():
                         (title TEXT, link TEXT, summary TEXT, category TEXT)''')
 
 # Initialize summarization pipeline
-summarizer = pipeline("summarization")
+summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
 
-# Function to fetch and scrape news articles
 def fetch_and_scrape():
     while True:
         for feed in RSS_FEEDS:
@@ -50,50 +45,43 @@ def fetch_and_scrape():
                 soup = BeautifulSoup(response.content, 'html.parser')
                 paragraphs = soup.find_all('p')
                 article_text = ' '.join([para.get_text() for para in paragraphs])
-
-                # Check if the article text is long enough to summarize
-                if len(article_text.split()) > 10:
-                    # Summarize using Hugging Face transformers
+                
+                # Summarize using Hugging Face transformers
+                if len(article_text.split()) > 30:  # Check if there's enough text to summarize
                     summary = summarizer(article_text, max_length=100, min_length=30, do_sample=False)
                     summary_text = summary[0]['summary_text']
                 else:
-                    summary_text = article_text  # Use the full text if it's too short
+                    summary_text = article_text[:100] + "..."  # Fallback to truncating if text is too short
 
                 category = categorize_article(entry.title)
                 store_article(entry.title, entry.link, summary_text, category)
 
-        time.sleep(600)  # Fetch every 10 minutes
+        time.sleep(5)  # fetch every 5 seconds
 
-# Function to categorize articles based on title
 def categorize_article(title):
-    title_lower = title.lower()
-    if "finance" in title_lower:
+    if "finance" in title.lower():
         return "Finance"
-    elif "war" in title_lower:
+    elif "war" in title.lower():
         return "War"
     else:
         return "Politics"
 
-# Function to store articles in the database
 def store_article(title, link, summary, category):
     conn = create_connection()
     with conn:
         conn.execute("INSERT INTO articles (title, link, summary, category) VALUES (?, ?, ?, ?)",
                      (title, link, summary, category))
 
-# API endpoint to get news articles
 @app.route('/news', methods=['GET'])
 def get_news():
     conn = create_connection()
     articles = conn.execute("SELECT * FROM articles").fetchall()
-    return jsonify([{'title': row['title'], 'link': row['link'], 'summary': row['summary'], 'category': row['category']} for row in articles])
+    return jsonify([{'title': row[0], 'link': row[1], 'summary': row[2], 'category': row[3]} for row in articles])
 
-# Homepage route
 @app.route('/')
 def index():
     return render_template('index.html')
 
-# Start the application
 if __name__ == '__main__':
     create_table()
     threading.Thread(target=fetch_and_scrape, daemon=True).start()
